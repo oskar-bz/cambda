@@ -38,6 +38,7 @@ enum cbInstructionKind {
     INS_SETCAR,
     INS_SETCDR,
     INS_CALL,
+    INS_CALL_CFUNC,
     INS_PUSHTRUE,
     INS_PUSHFALSE,
     INS_PUSHNIL,
@@ -74,16 +75,17 @@ enum cbInstructionKind {
     INS_CJUMP,
 };
 
+typedef bool cbNativeFunction(cbState* ctx);
+
 struct cbInstruction {
     cbInstructionKind kind;
     union {
         double float_;
         u64 u64_;
         i64 i64_;
+        cbFn* cbFn_;
     };
 };
-
-typedef bool cbNativeFunction(cbState* ctx);
 
 #define cbSpan_make(line_, col_, len_) (cbSpan){.line=line_,.col=col_,.len=len_}
 
@@ -131,6 +133,7 @@ struct cbError {
         ERROR_UNEXPECTED_CHAR,
         ERROR_EXPECTED_SIGN_AFTER_E,
         ERROR_EXPONENT_AFTER_COMMA,
+        ERROR_NOT_CALLABLE,
     } kind ;
 };
 

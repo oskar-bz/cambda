@@ -7,7 +7,63 @@ const u64 TRUE_HASH = 0x5b5c98ef514dbfa5;
 const u64 FALSE_HASH = 0xb5fae2c14238b978;
 const u64 NIL_HASH = 0x2146ba19257dc6ac;
 
+const u64 DEFINE_HASH = 0x4c56130c429d6d92;
+const u64 LET_HASH = 0x127284191dcc577a;
+const u64 MACRO_HASH = 0x12c837a52b5d72b3;
+const u64 LAMBDA_HASH = 0x826b4caaf325324a;
+const u64 IF_HASH = 0x08b73007b55c3e26;
+const u64 CAR_HASH = 0xf5e305190ce49fc1;
+const u64 CDR_HASH = 0xf5ecf3190cecd5b0;
+const u64 CONS_HASH = 0x0bca0591195d8188;
+const u64 LIST_HASH = 0xbf779aad69748141;
+const u64 MATCH_HASH = 0xc3bfe3a4fe4c13f6;
+
 #define cur() *(ctx->cur)
+
+char* cbInstructionKindStrings[] = {
+    "INS_LIST",
+    "INS_CONS",
+    "INS_CAR",
+    "INS_CDR",
+    "INS_SETCAR",
+    "INS_SETCDR",
+    "INS_CALL",
+    "INS_CALL_CFUNC",
+    "INS_PUSHTRUE",
+    "INS_PUSHFALSE",
+    "INS_PUSHNIL",
+    "INS_PUSHHASH",
+    "INS_PUSHINT",
+    "INS_PUSHFLOAT",
+    "INS_POPTRUE",
+    "INS_POPFALSE",
+    "INS_POPNIL",
+    "INS_POPHASH",
+    "INS_POPINT",
+    "INS_POPFLOAT",
+    "INS_DUP",
+    "INS_SCOPE_PUSH",
+    "INS_DEF",
+    "INS_GET",
+    "INS_SCOPE_POP",
+    "INS_ADDI",
+    "INS_ADDF",
+    "INS_ADDS",
+    "INS_SUBI",
+    "INS_SUBF",
+    "INS_MULI",
+    "INS_MULF",
+    "INS_DIVI",
+    "INS_DIVF",
+    "INS_MODI",
+    "INS_MODF",
+    "INS_NOT",
+    "INS_AND",
+    "INS_OR",
+    "INS_XOR",
+    "INS_JUMP",
+    "INS_CJUMP",
+};
 
 static bool advance(cbState* ctx) {
     switch (*(ctx->cur)) {
@@ -103,6 +159,17 @@ emit_val_fn(f, float);
 emit_val_fn(h, u64);
 emit_val_fn(i, i64);
 
+static cbError emitfn(cbState *ctx, cbInstructionKind kind, cbFn* val) {
+    cbInstruction *ins = olArray_push(ctx->cur_body);
+    if (ins == ((void *)0)) {
+    return (cbError){
+        .loc.line = 0, .loc.col = 0, .loc.len = 0, .kind = ERROR_OUT_OF_MEM};
+    }
+    ins->kind = kind;
+    ins->cbFn_ = val;
+    return (cbError){.loc.line = 0, .loc.col = 0, .loc.len = 0, .kind = ERROR_OK};
+};
+
 static cbError errorc(enum cbErrorKind kind, cbSpan loc, const char* msg) {
     cbError result;
     result.kind = kind;
@@ -150,7 +217,7 @@ static cbError gen_number(cbState* ctx) {
         float_val = (double)int_val;
         is_float = true;
         if (cur() == 'e') {
-            return error(ERROR_EXPONENT_AFTER_COMMA, ctx->cur_loc, "Unexpected 'e' after comma.");
+            return errorc(ERROR_EXPONENT_AFTER_COMMA, ctx->cur_loc, "Unexpected 'e' after comma.");
         }
         u64 decimals = 0; u32 count = 0;
         while (cur() >= '0' && cur() <= '9') {
@@ -171,7 +238,7 @@ static cbError gen_number(cbState* ctx) {
             div = true;
             advance(ctx);
         } else {
-            return error(ERROR_EXPECTED_SIGN_AFTER_E, ctx->cur_loc, "Expected a sing (+ or -) after e in number");
+            return errorc(ERROR_EXPECTED_SIGN_AFTER_E, ctx->cur_loc, "Expected a sing (+ or -) after e in number");
         }
         u64 exponent = 0;
         while (cur() >= '0' && cur() <= '9') {
@@ -203,20 +270,79 @@ static cbError gen_number(cbState* ctx) {
     }
 }
 
+void scope_push(cbState* ctx) {
+    cbScope* new_scope = malloc(sizeof(cbScope));
+    new_scope->prev = ctx->scope;
+    new_scope->env = olMap_makeof(cbValue);
+    ctx->scope = new_scope;
+}
+
+void scope_pop(cbState* ctx) {
+    cbScope* sc = ctx->scope;
+    ctx->scope = sc->prev;
+    free(sc);
+}
+
+static cbValue* scope_get(cbState* ctx, olStr* key) {
+    cbScope* cur_scope = ctx->scope;
+    do {
+        cbValue* result = (cbValue*)olMap_get(&cur_scope->env, key);
+        if (result != null) {
+            return result;
+        }
+        cur_scope = cur_scope->prev;
+    } while (cur_scope);
+    return null;
+}
+
+static cbValue* scope_set(cbState* ctx, olStr* key) {
+    return olMap_insert(&ctx->scope->env, key);
+}
+
 static cbError gen_expr(cbState* ctx) {
     skip_whitespace(ctx);
     if (*ctx->cur == '(') {
         advance(ctx);
         skip_whitespace(ctx);
+        loc_start(ctx);
         olStr* ident = parse_ident(ctx);
+        cbSpan loc = loc_end(ctx);
+        u64 hash = fnv1a(ident);
         // gen args
-        while (*ctx->cur != ')') {
+        while (cur() != ')') {
             gen_expr(ctx);
         }
         advance(ctx);
-        cbValue* fn = (cbValue*)olMap_get(&ctx->scope->env, ident);
-        if (fn == null) {
+        cbValue* fn = scope_get(ctx, ident);        
+        // check if it is a builtin function
+        if (hash == DEFINE_HASH)        {
             
+        } else if (hash == LET_HASH)    {
+            
+        } else if (hash == MACRO_HASH)  {
+            
+        } else if (hash == LAMBDA_HASH) {
+            
+        } else if (hash == IF_HASH)     {
+            
+        } else if (hash == CAR_HASH)    {
+            emit(ctx, INS_CAR);
+        } else if (hash == CDR_HASH)    {
+            emit(ctx, INS_CDR);
+        } else if (hash == CONS_HASH)   {
+            emit(ctx, INS_CONS);
+        } else if (hash == LIST_HASH)   {
+            emit(ctx, INS_LIST);
+        } else if (hash == MATCH_HASH)  {
+        } 
+        else if (fn->kind == VALUE_CFUNC) {
+            emitfn(ctx, INS_CALL_CFUNC, fn->fn_);
+        } else if (fn->kind == VALUE_FN) {
+            emitfn(ctx, INS_CALL, fn->fn_);
+        } else {
+            // TODO: call an expression like this
+            // ((get-fn foo) arg1 arg2)
+            return errorf(ERROR_NOT_CALLABLE, loc, "'%s' is not callable");
         }
     } else if (is_valid_ident(*ctx->cur)) {
         loc_start(ctx);
@@ -246,6 +372,7 @@ static cbError gen_expr(cbState* ctx) {
     } else {
         return errorf(ERROR_UNEXPECTED_CHAR, ctx->cur_loc, "Unexpected char '%c'", *ctx->cur);
     }
+    return cbError_ok();
 }
 
 static cbError cb_parse(cbState* ctx) {
@@ -253,19 +380,6 @@ static cbError cb_parse(cbState* ctx) {
         gen_expr(ctx);
     }
     return cbError_ok();
-}
-
-void scope_push(cbState* ctx) {
-    cbScope* new_scope = malloc(sizeof(cbScope));
-    new_scope->prev = ctx->scope;
-    new_scope->env = olMap_makeof(cbValue);
-    ctx->scope = new_scope;
-}
-
-void scope_pop(cbState* ctx) {
-    cbScope* sc = ctx->scope;
-    ctx->scope = sc->prev;
-    free(sc);
 }
 
 cbState cb_init() {
