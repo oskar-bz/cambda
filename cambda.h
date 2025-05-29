@@ -5,7 +5,7 @@
 typedef struct cbState cbState;
 typedef struct cbValue cbValue;
 typedef enum cbInstructionKind cbInstructionKind;
-typedef cbInstructionKind cbInstruction;
+typedef struct cbInstruction cbInstruction;
 typedef struct cbFn cbFn;
 typedef struct cbSpan cbSpan;
 typedef struct cbError cbError;
@@ -38,8 +38,18 @@ enum cbInstructionKind {
     INS_SETCAR,
     INS_SETCDR,
     INS_CALL,
-    INS_PUSH,
-    INS_POP,
+    INS_PUSHTRUE,
+    INS_PUSHFALSE,
+    INS_PUSHNIL,
+    INS_PUSHHASH,
+    INS_PUSHINT,
+    INS_PUSHFLOAT,
+    INS_POPTRUE,
+    INS_POPFALSE,
+    INS_POPNIL,
+    INS_POPHASH,
+    INS_POPINT,
+    INS_POPFLOAT,
     INS_DUP,
     INS_SCOPE_PUSH,
     INS_DEF,
@@ -64,6 +74,15 @@ enum cbInstructionKind {
     INS_CJUMP,
 };
 
+struct cbInstruction {
+    cbInstructionKind kind;
+    union {
+        double float_;
+        u64 u64_;
+        i64 i64_;
+    };
+};
+
 typedef bool cbNativeFunction(cbState* ctx);
 
 #define cbSpan_make(line_, col_, len_) (cbSpan){.line=line_,.col=col_,.len=len_}
@@ -77,18 +96,16 @@ struct cbSpan {
 struct cbFn {
     union {
         cbNativeFunction* cfunc_;
-        struct {
-            olArray_of(cbInstruction) body;
-            olArray_of(cbType) args;
-            olArray_of(cbType) return_vals;
-        };
+        olArray_of(cbInstruction) body;
     };
     olStr* name;
     cbSpan loc;
+    olArray_of(cbType) args;
+    olArray_of(cbType) return_vals;
 };
 
 struct cbScope {
-    olMap env;
+    olMap_of(cbValue) env;
     cbScope* prev;
 };
 
@@ -100,18 +117,26 @@ struct cbState {
     olStr* content;
     char* cur;
     cbSpan cur_loc;
+    olArray loc_stack;
 };
 
 struct cbError {
     cbSpan loc;
+    olStr* err_str;
     enum cbErrorKind {
         ERROR_OK,
         ERROR_MISSING_RPAREN,
-    } error;
+        ERROR_EMPTY_KEYWORD,
+        ERROR_OUT_OF_MEM,
+        ERROR_UNEXPECTED_CHAR,
+        ERROR_EXPECTED_SIGN_AFTER_E,
+        ERROR_EXPONENT_AFTER_COMMA,
+    } kind ;
 };
 
-#define cbError_make(error_, line_,col_,len_) (cbError) {.loc.line=line_,.loc.col=col_,.loc.len=len_,.error=error_}
+#define cbError_make(error_, line_,col_,len_) (cbError) {.loc.line=line_,.loc.col=col_,.loc.len=len_,.kind=error_}
 #define cbError_ok() cbError_make(ERROR_OK, 0, 0, 0) 
+#define cbError_OutOfMem() cbError_make(ERROR_OUT_OF_MEM, 0, 0, 0) 
 
 cbState cb_init();
 cbError cb_eval(cbState* ctx, olStr* content);
