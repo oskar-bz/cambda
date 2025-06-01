@@ -24,6 +24,6 @@ int main(int argc, char** argv) {
     
     olStr* content = olStr_make(buf, 0);
     cbError err = cb_eval(&ctx, content);
-    print_bytecode(&ctx);
+    cb_print_ast(&ctx);
     return 0;
 }
