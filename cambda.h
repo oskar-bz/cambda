@@ -13,6 +13,7 @@ typedef struct cbScope cbScope;
 typedef struct cbExpression cbExpression;
 typedef bool cbNativeFunction(cbState *ctx);
 typedef struct cbType cbType;
+typedef struct cbArg cbArg; 
 
 struct cbValue {
   union {
@@ -89,7 +90,7 @@ struct cbSpan {
 };
 
 struct cbType {
-  u32 id;
+  u64 id;
   u64 name;
 };
 
@@ -100,8 +101,10 @@ struct cbExpression {
     EKEYW,
     EAPP,
     EAPP_UNRESOLVED,
-    EABS,
     ELIT,
+    ELET,
+    EDO,
+    EIF,
   } kind;
   union {
     struct {
@@ -115,6 +118,21 @@ struct cbExpression {
       };
       olArray_of(cbType) supplied_args;
     } app;
+
+    struct {
+      cbExpression* expr;
+      u64 hash;
+    } let;
+
+    struct {
+      cbExpression* cond;
+      cbExpression* if_true;
+      cbExpression* if_false;
+    } iff;
+
+    struct {
+      olArray_of(cbExpression) exprs;
+    } do_;
     
     cbValue lit;
   };
@@ -132,6 +150,11 @@ struct cbInstruction {
   };
 };
 
+struct cbArg {
+  cbType type;
+  u64 name;
+};
+
 struct cbFn {
   bool is_native;
   union {
@@ -139,10 +162,10 @@ struct cbFn {
     olArray_of(cbInstruction) ibody;
     cbExpression* ebody;
   };
-  olStr *name;
+  u64 name_hash;
   cbSpan loc;
-  olArray_of(cbType) args;
-  olArray_of(cbType) return_vals;
+  olArray_of(cbArg) args;
+  cbType return_type;
 };
 
 struct cbScope {
@@ -178,6 +201,8 @@ struct cbError {
     ERROR_NOT_CALLABLE,
     ERROR_UNEXPECTED_EOF,
     ERROR_VAR_NOT_FOUND,
+    ERROR_WRONG_ARGS,
+    ERROR_EXPECTED_IDENT,
     ERROR_LEN,
   } kind;
 };
@@ -195,5 +220,5 @@ cbState cb_init();
 cbError cb_eval(cbState *ctx, olStr *content);
 void cb_reset(cbState *ctx);
 void cb_deinit(cbState *ctx);
-void cbPrintError(cbState *ctx, cbError err, bool verbose);
+void cb_print_error(cbState* ctx, cbError err, bool verbose, olStr* filename);
 void cb_print_ast(cbState* ctx);

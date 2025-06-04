@@ -20,10 +20,14 @@ int main(int argc, char** argv) {
     cbState ctx = cb_init();
 
     char buf[512];
-    scanf_s("%s", buf, sizeof(buf));
+    fgets(buf, sizeof(buf), stdin);
     
     olStr* content = olStr_make(buf, 0);
     cbError err = cb_eval(&ctx, content);
+    if (err.kind != ERROR_OK) {
+        cb_print_error(&ctx, err, true, null);
+        return -1;
+    }
     cb_print_ast(&ctx);
     return 0;
 }
