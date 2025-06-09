@@ -13,7 +13,7 @@ typedef struct cbScope cbScope;
 typedef struct cbExpression cbExpression;
 typedef bool cbNativeFunction(cbState *ctx);
 typedef struct cbType cbType;
-typedef struct cbArg cbArg; 
+typedef struct cbArg cbArg;
 
 struct cbValue {
   union {
@@ -89,8 +89,27 @@ struct cbSpan {
   u32 len;
 };
 
+enum cbTypeKind {
+  TK_TEMP,
+  TK_CONCRETE,
+  TK_FN,
+};
+
 struct cbType {
-  u64 id;
+  struct {
+    u64 is_fn : 1;
+    u64 is_temp : 1;
+    u64 id : 62; // name for concrete type, else id for typevar
+  };
+  
+  struct {
+    cbType *from;
+    cbType *to;
+  } fn;
+};
+
+struct cbArg {
+  cbType type;
   u64 name;
 };
 
@@ -110,30 +129,30 @@ struct cbExpression {
     struct {
       u64 hash;
     } var;
-    
+
     struct {
       union {
-        cbFn* fn;
-        cbExpression* fnexpr;
+        cbFn *fn;
+        cbExpression *fnexpr;
       };
       olArray_of(cbType) supplied_args;
     } app;
 
     struct {
-      cbExpression* expr;
+      cbExpression *expr;
       u64 hash;
     } let;
 
     struct {
-      cbExpression* cond;
-      cbExpression* if_true;
-      cbExpression* if_false;
+      cbExpression *cond;
+      cbExpression *if_true;
+      cbExpression *if_false;
     } iff;
 
     struct {
       olArray_of(cbExpression) exprs;
     } do_;
-    
+
     cbValue lit;
   };
   cbType type;
@@ -150,17 +169,12 @@ struct cbInstruction {
   };
 };
 
-struct cbArg {
-  cbType type;
-  u64 name;
-};
-
 struct cbFn {
   bool is_native;
   union {
     cbNativeFunction *cfunc_;
     olArray_of(cbInstruction) ibody;
-    cbExpression* ebody;
+    cbExpression *ebody;
   };
   u64 name_hash;
   cbSpan loc;
@@ -178,7 +192,7 @@ struct cbState {
   olMap string_map;
   olArray stack;
   olArray main;
-  cbExpression* program;
+  cbExpression *program;
   olArray *cur_body;
   cbScope *scope;
   olStr *content;
@@ -203,6 +217,7 @@ struct cbError {
     ERROR_VAR_NOT_FOUND,
     ERROR_WRONG_ARGS,
     ERROR_EXPECTED_IDENT,
+    ERROR_INCOMPATIBLE_TYPES,
     ERROR_LEN,
   } kind;
 };
@@ -220,5 +235,5 @@ cbState cb_init();
 cbError cb_eval(cbState *ctx, olStr *content);
 void cb_reset(cbState *ctx);
 void cb_deinit(cbState *ctx);
-void cb_print_error(cbState* ctx, cbError err, bool verbose, olStr* filename);
-void cb_print_ast(cbState* ctx);
+void cb_print_error(cbState *ctx, cbError err, bool verbose, olStr *filename);
+void cb_print_ast(cbState *ctx);

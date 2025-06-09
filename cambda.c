@@ -19,7 +19,7 @@ const u64 MATCH_HASH = 0xc3bfe3a4fe4c13f6;
 const u64 SET_HASH = 0x823b87195ce20e23;
 const u64 DO_HASH = 0x08915907b53bb494;
 
-const cbType NULLTYPE = (cbType){.id = 0, .name = 0};
+const cbType NULLTYPE = (cbType){.id = 0, .kind = TK_TEMP};
 cbExpression NULLEXPR = (cbExpression){.kind = E_INVALID};
 
 #define cur() *(ctx->cur)
@@ -64,6 +64,7 @@ const char *cbErrorKind_strings[ERROR_LEN] = {
     "ERROR_UNEXPECTED_EOF",
     "ERROR_VAR_NOT_FOUND",
     "ERROR_EXPECTED_IDENT",
+    "ERROR_INCOMPATIBLE_TYPES",
     "ERROR_WRONG_ARGS",
 };
 
@@ -197,7 +198,7 @@ void cb_print_node(cbState *ctx, cbExpression *cur, u32 indent) {
       cb_print_node(ctx, olArray_get(&cur->app.supplied_args, i), 0);
       printf(", ");
     }
-    //cb_print_indent(indent);
+    // cb_print_indent(indent);
     printf(")\n");
     break;
   case ELIT:
@@ -230,7 +231,7 @@ void cb_print_node(cbState *ctx, cbExpression *cur, u32 indent) {
     case VALUE_FN:
       printf("(%s (", cur->lit.fn_->is_native ? "cfunc" : "lambda");
       for (int i = 0; i < cur->lit.fn_->args.used; i++) {
-        cbArg* a = olArray_get(&cur->lit.fn_->args, i);
+        cbArg *a = olArray_get(&cur->lit.fn_->args, i);
         printf("%s", cb_get_string(ctx, a->name)->data);
         printf(", ");
       }
@@ -763,6 +764,38 @@ static cbExpression *cb_parse(cbState *ctx, cbError *out_err) {
       return &NULLEXPR;
     }
   }
+}
+
+// SECTION TYPES
+// a := expected
+// b := real
+cbType unify(cbState *ctx, cbType a, cbType b, cbError *out_error) {
+  *out_error = cbError_ok();
+  
+  if (a.kind == TK_CONCRETE) {
+    if (b.kind == TK_CONCRETE) {
+      if (a.id == b.id)
+        return a;
+      else {
+        olStr *a_str = cb_get_string(ctx, a.id);
+        olStr *b_str = cb_get_string(ctx, b.id);
+        *out_error = errorf(ERROR_INCOMPATIBLE_TYPES, (cbSpan){0},
+                            "Incompatible types: expected '%s', got '%s'",
+                            a_str ? a_str->data : "<not found>",
+                            b_str ? b_str->data : "<not found>");
+        return NULLTYPE;
+      }
+    } else if (b.kind == TK_TEMP) {
+      return a;
+    } else if (b.kind == TK_FN) {
+      // compare types
+    }
+    
+  }
+}
+
+void infer(olMap *env, cbExpression *expr) {
+  printf("TODO: type inference is not implemented yet!");
 }
 
 cbState cb_init() {
