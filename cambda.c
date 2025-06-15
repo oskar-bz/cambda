@@ -19,8 +19,20 @@ const u64 MATCH_HASH = 0xc3bfe3a4fe4c13f6;
 const u64 SET_HASH = 0x823b87195ce20e23;
 const u64 DO_HASH = 0x08915907b53bb494;
 
-const cbType NULLTYPE = (cbType){.id = 0, .kind = TK_TEMP};
-cbExpression NULLEXPR = (cbExpression){.kind = E_INVALID};
+cbType BOOLTYPE = (cbType) {.is_fn = false, .is_temp = false};
+cbType NILTYPE = (cbType) {.is_fn = false, .is_temp = false};
+cbType INTTYPE = (cbType) {.is_fn = false, .is_temp = false};
+cbType FLOATTYPE = (cbType) {.is_fn = false, .is_temp = false};
+cbType STRTYPE = (cbType) {.is_fn = false, .is_temp = false};
+cbType HASHTYPE = (cbType) {.is_fn = false, .is_temp = false};
+
+typedef olArray_of(cbSubst) SubstSet;
+typedef olMap_of(cbScheme) TypeEnv;
+
+const cbType NULLTYPE = (cbType){.id = 0, .is_temp = true};
+const cbExpression NULLEXPR = (cbExpression){.kind = E_INVALID};
+const cbSubst NULLSUBST = (cbSubst) {.replace = 0};
+const SubstSet NULLSUBSTSET = (SubstSet){.cap=0,.data=null};
 
 #define cur() *(ctx->cur)
 #define check_eof(maybe_eof)                                                   \
@@ -65,6 +77,7 @@ const char *cbErrorKind_strings[ERROR_LEN] = {
     "ERROR_VAR_NOT_FOUND",
     "ERROR_EXPECTED_IDENT",
     "ERROR_INCOMPATIBLE_TYPES",
+    "ERROR_UNDEFINED_VAR",
     "ERROR_WRONG_ARGS",
 };
 
@@ -183,9 +196,6 @@ void cb_print_node(cbState *ctx, cbExpression *cur, u32 indent) {
   case EVAR:
     olStr *name = cb_get_string(ctx, cur->var.hash);
     printf("%s", name ? name->data : "<not found>");
-    break;
-  case EKEYW:
-    printf(":%s", cb_get_string(ctx, cur->lit.hash_)->data);
     break;
   case EAPP:
     printf("\nTODO: resolved abs cannot be printed yet!\n");
@@ -767,35 +777,301 @@ static cbExpression *cb_parse(cbState *ctx, cbError *out_err) {
 }
 
 // SECTION TYPES
+olStr* type_to_str_rec(cbType t, olStrBuilder b) {
+  if (t.is_fn) {
+    olStrBuilder_appendc(&b, '(');
+    type_to_str_rec(*t.fn.from, b);
+    olStrBuilder_appends(&b, " -> ", 4);
+    type_to_str_rec(*t.fn.to, b);
+    olStrBuilder_appendc(&b, ')');
+    return olStrBuilder_finish(&b);
+  }
+  
+  if (t.is_temp) {
+    olStrBuilder_appendc(&b, 't');  
+    olStrBuilder_appendf(&b, "%d", t.id);
+    return olStrBuilder_finish(&b);
+  }
+  return null;  // should never happen
+}
+
+olStr* type_to_str(cbState* ctx, cbType t) {
+  if (!t.is_fn && !t.is_temp) {
+    return cb_get_string(ctx, t.id);
+  }
+  olStrBuilder b = olStrBuilder_make(32);
+  return type_to_str_rec(t, b);
+}
+
+cbError cbError_incompatible_types(cbState* ctx, cbType expected, cbType got) {
+      olStr *a_str = type_to_str(ctx, expected);
+      olStr *b_str = type_to_str(ctx, got);
+      return errorf(ERROR_INCOMPATIBLE_TYPES, (cbSpan){0},
+                          "Incompatible types: expected '%s', got '%s'",
+                          a_str ? a_str->data : "<not found>",
+                          b_str ? b_str->data : "<not found>");
+}
+
 // a := expected
 // b := real
-cbType unify(cbState *ctx, cbType a, cbType b, cbError *out_error) {
-  *out_error = cbError_ok();
-  
-  if (a.kind == TK_CONCRETE) {
-    if (b.kind == TK_CONCRETE) {
-      if (a.id == b.id)
-        return a;
-      else {
-        olStr *a_str = cb_get_string(ctx, a.id);
-        olStr *b_str = cb_get_string(ctx, b.id);
-        *out_error = errorf(ERROR_INCOMPATIBLE_TYPES, (cbSpan){0},
-                            "Incompatible types: expected '%s', got '%s'",
-                            a_str ? a_str->data : "<not found>",
-                            b_str ? b_str->data : "<not found>");
-        return NULLTYPE;
-      }
-    } else if (b.kind == TK_TEMP) {
-      return a;
-    } else if (b.kind == TK_FN) {
-      // compare types
+
+SubstSet substset_make(cbSubst initial) {
+  SubstSet result = olArray_make(sizeof(cbSubst), 2);
+  cbSubst* s = olArray_push(&result);
+  *s = initial;
+  return result;
+}
+
+SubstSet subst_union(SubstSet* a, SubstSet* b) {
+  SubstSet* smaller; SubstSet* bigger;
+  if (a->used < b->used) {
+    smaller = a; bigger = b;
+  } else {
+    smaller = b; bigger = a;
+  }
+  SubstSet result = olArray_copy(bigger);
+  // copy elements that are only in smaller but not in bigger
+  for (int i = 0; i < smaller->used; ++i) {
+    cbSubst* subst = olArray_get(smaller, i);
+    if (0 == olArray_find(bigger, subst)) {
+      continue;
     }
-    
+    cbSubst* place = olArray_push(&result);
+    *place = *subst;
+  }
+  return result;
+}
+
+cbType get_replacement(SubstSet* s, u64 temp_id) {
+  for (int i = 0; i < s->used; i++) {
+    cbSubst* s = olArray_get(s, i);
+    if (s->replace == temp_id) {
+      return s->with;
+    }
+  }
+  return (cbType) {.id = temp_id, .is_temp = true, .is_fn = false};
+}
+
+cbType type_make(bool is_temp, bool is_fn, cbType _from, cbType _to) {
+  cbType* from = malloc(sizeof(cbType));
+  memcpy(from, &_from, sizeof(cbType));
+  cbType* to = malloc(sizeof(cbType));
+  memcpy(to, &_to, sizeof(cbType));
+  
+  cbType result;
+  result.is_temp = is_temp;
+  result.is_fn = is_fn;
+  result.fn.from = from;
+  result.fn.to = to;
+  return result;
+}
+
+cbType apply(SubstSet* s, cbType t) {
+  if (t.is_temp) {
+    return get_replacement(s, t.id);
+  } 
+  if (t.is_fn) {
+    cbType from = apply(s, *t.fn.from);
+    cbType to = apply(s, *t.fn.to);
+    return type_make(false, true, from, to);
+  }
+
+  // if t is a concrete type, return it simply
+  return t;
+}
+
+SubstSet unify(cbState *ctx, cbType a, cbType b, cbError *out_error) {
+  *out_error = cbError_ok();
+  SubstSet result = NULLSUBSTSET;
+  
+  // a is not a function
+  if (a.is_temp) {
+    result = substset_make(subst_make(a.id, b));
+    return result;
+  }
+  
+  // a is a concrete type
+  if (b.is_temp) {
+    result = substset_make(subst_make(b.id, a));
+    return result;
+  }
+  else if (a.is_fn) {
+    if (b.is_fn) {
+      // both are functions
+      SubstSet left = unify(ctx, *a.fn.from, *b.fn.from, out_error);    
+      if (out_error->kind != ERROR_OK) return NULLSUBSTSET;
+      SubstSet right = unify(ctx, *a.fn.to, *b.fn.to, out_error);
+      if (out_error->kind != ERROR_OK) return NULLSUBSTSET;
+      SubstSet result = subst_union(&left, &right);
+      olArray_delete(&left);
+      olArray_delete(&right);
+      return result;
+    }
+  }
+  else {
+    // a is a concrete type and not a function, b is a concrete type or a function
+    if (b.is_fn || a.id != b.id) {
+      *out_error = cbError_incompatible_types(ctx, a, b);
+    }
+    // either incompatible or the same type, nothing to change
+    return NULLSUBSTSET;
   }
 }
 
-void infer(olMap *env, cbExpression *expr) {
-  printf("TODO: type inference is not implemented yet!");
+cbType instantiate_rec(olArray* foralls, olArray* replace_with, cbType type) {
+  if (type.is_temp) {
+    for (int i = 0; i < foralls->used; ++i) {
+      u64 id = *(u64*)olArray_get(foralls, i);
+      if (id == type.id) {
+        type.id = *(u64*)olArray_get(replace_with, i);
+      }
+    }
+    return type;
+  }
+
+  if (type.is_fn) {
+    cbType* new_from = malloc(sizeof(cbType));
+    cbType* new_to = malloc(sizeof(cbType));
+    *new_from = instantiate_rec(foralls, replace_with, *type.fn.from);
+    *new_to = instantiate_rec(foralls, replace_with, *type.fn.to);
+    free(type.fn.from);
+    type.fn.from = new_from;
+    free(type.fn.to);
+    type.fn.to = new_to;
+    return type;
+  }
+}
+
+cbType instantiate(cbState* ctx, cbScheme* scheme) {
+  olArray_of(u64) replace_with = olArray_make(sizeof(u64), scheme->foralls.used);
+  for (int i = 0; i < scheme->foralls.used; ++i) {
+    u64* r = olArray_get(&replace_with, i);
+    *r = ctx->cur_temp++;
+  }
+  return instantiate_rec(&scheme->foralls, &replace_with, scheme->scheme);
+}
+
+SubstSet infer(cbState* ctx, olMap* type_env, cbExpression* expr, cbType* out_type, cbError* out_error);
+
+SubstSet infer_fn(cbState* ctx, olMap* type_env, cbExpression* expr, cbType* out_type, cbError* out_error) {
+  *out_error = cbError_ok();
+  for (int i = 0; i < expr->lit.fn_->args.used; ++i) {
+    cbArg* arg = olArray_get(&expr->lit.fn_->args, i);
+    cbType arg_type = (cbType) {.is_temp = true, .is_fn = false, .id = ctx->cur_temp++};  
+    
+    cbScheme* scheme = olMap_inserth(type_env, arg->name);
+    scheme->scheme = arg_type;
+    scheme->foralls.cap = 0;
+  }
+  
+  // infer body
+  cbType return_type;
+  SubstSet substitutions = infer(ctx, type_env, expr->lit.fn_->ebody, &return_type, out_error);
+  
+  // apply substitutions
+  *out_type = (cbType) {.is_temp = false, .is_fn = true};
+  cbType* last = null;
+  for (int i = expr->lit.fn_->args.used-1; i >= 0; --i) {
+    cbArg* arg = olArray_get(&expr->lit.fn_->args, i);
+    cbScheme* scheme = olMap_geth(type_env, arg->name);
+    scheme->scheme = apply(&substitutions, scheme->scheme);
+    
+    cbType* typ = malloc(sizeof(cbType));
+    typ->is_fn = true;
+    typ->is_temp = false;
+    typ->fn.from = malloc(sizeof(cbType));
+    *typ->fn.from = scheme->scheme;
+
+    if (last == null) {
+      typ->fn.to = malloc(sizeof(cbType));
+      *typ->fn.to = return_type;
+    } else {
+      typ->fn.to = last;
+    }
+    last = typ;
+  }
+
+  // remove from scope
+  for (int i = 0; i < expr->lit.fn_->args.used; ++i) {
+    cbArg* arg = olArray_get(&expr->lit.fn_->args, i);
+    olMap_removeh(type_env, arg->name);
+  }
+  return substitutions;
+}
+
+SubstSet infer_app(cbState* ctx, olMap* type_env, cbExpression* expr, cbType* out_type, cbError* out_error) {
+  // TODO: implement this
+    cbType return_type = (cbType) {.is_temp = true, .is_fn = false};
+    cbType fn_type;
+    SubstSet substs = infer(ctx, type_env, expr->app.fnexpr, &fn_type, out_error);
+    olMap new_env = olMap_copy(type_env);
+
+    // apply substitutions to the env
+    olMapSlot* cur_slot = null;
+    while (olMap_next(&new_env, &cur_slot)) {
+      cbScheme sc = *(cbScheme*)(&cur_slot->data);
+      sc.scheme = apply(&substs, sc.scheme);
+    }
+
+    // infer right hand types
+    for (int i = 0; i < expr->app.supplied_args.used; ++i) {
+      cbExpression* arg = olArray_get(&expr->app.supplied_args, i);
+      cbType type2;
+      SubstSet sub2 = infer(ctx, &new_env, arg, &type2, out_error);
+      
+    }
+}
+
+SubstSet infer(cbState* ctx, olMap* type_env, cbExpression* expr, cbType* out_type, cbError* out_error) {
+  *out_error = cbError_ok();
+  switch (expr->kind) {
+  case ELIT: {
+    switch (expr->lit.kind) {
+      case VALUE_HASH:
+        *out_type = HASHTYPE;
+        break;
+      case VALUE_TRUE:
+        *out_type = BOOLTYPE;
+        break;
+      case VALUE_FALSE:
+        *out_type = BOOLTYPE;
+        break;
+      case VALUE_NIL:
+        *out_type = NILTYPE;
+        break;
+      case VALUE_INT:
+        *out_type = INTTYPE;
+        break;
+      case VALUE_FLOAT:
+        *out_type = FLOATTYPE;
+        break;
+      case VALUE_STR:
+        *out_type = STRTYPE;
+        break;
+      case VALUE_FN:
+        return infer_fn(ctx, type_env, expr, out_type, out_error);
+    }
+    return NULLSUBSTSET;
+  } break;
+  case EVAR: {
+      cbScheme* scheme = olMap_geth(type_env, expr->var.hash);
+      if (scheme == null) {
+        olStr* varname = cb_get_string(ctx, expr->var.hash);
+        *out_error = errorf(ERROR_UNDEFINED_VAR, expr->loc, "Undefined var '%s'", varname ? varname->data : "<not found>"); 
+        return NULLSUBSTSET;
+      }
+      *out_type = instantiate(ctx, scheme);
+      return NULLSUBSTSET;
+  } break;
+  case EAPP_UNRESOLVED: {
+      return infer_app(ctx, type_env, expr, out_type, out_error);
+  } break;
+  case EAPP:
+  case ELET:
+  case EDO:
+  case EIF:
+    break;
+  }
 }
 
 cbState cb_init() {
@@ -809,7 +1085,15 @@ cbState cb_init() {
   result.cur = null;
   result.cur_loc = cbSpan_make(0, 0, 1);
   result.loc_stack = olArray_makeof(cbSpan, 5);
+  result.cur_temp = 1;
   olLog_init();
+  // register types
+  BOOLTYPE.id = cb_register_string(&result, olStr_fromConst("Bool"));
+  INTTYPE.id = cb_register_string(&result, olStr_fromConst("Int"));
+  FLOATTYPE.id = cb_register_string(&result, olStr_fromConst("Float"));
+  STRTYPE.id = cb_register_string(&result, olStr_fromConst("String"));
+  NILTYPE.id = cb_register_string(&result, olStr_fromConst("Nil"));
+  HASHTYPE.id = cb_register_string(&result, olStr_fromConst("Hash"));
   return result;
 }
 

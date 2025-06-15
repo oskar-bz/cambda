@@ -1,6 +1,6 @@
 #pragma once
 
-#include "..\\lib\\ol.h"
+#include "lib\\ol.h"
 
 typedef struct cbState cbState;
 typedef struct cbValue cbValue;
@@ -13,6 +13,9 @@ typedef struct cbScope cbScope;
 typedef struct cbExpression cbExpression;
 typedef bool cbNativeFunction(cbState *ctx);
 typedef struct cbType cbType;
+typedef struct cbSubst cbSubst;
+typedef struct cbSubstSet cbSubstSet;
+typedef struct cbScheme cbScheme;
 typedef struct cbArg cbArg;
 
 struct cbValue {
@@ -108,6 +111,18 @@ struct cbType {
   } fn;
 };
 
+struct cbScheme {
+  olArray_of(u64) foralls;
+  cbType scheme;
+};
+
+#define subst_make(_replace, _with) (cbSubst){.replace=_replace,.with=_with}
+
+struct cbSubst {
+  u64 replace;
+  cbType with;
+};
+
 struct cbArg {
   cbType type;
   u64 name;
@@ -117,7 +132,6 @@ struct cbExpression {
   enum cbExpressionKind {
     E_INVALID,
     EVAR,
-    EKEYW,
     EAPP,
     EAPP_UNRESOLVED,
     ELIT,
@@ -135,7 +149,7 @@ struct cbExpression {
         cbFn *fn;
         cbExpression *fnexpr;
       };
-      olArray_of(cbType) supplied_args;
+      olArray_of(cbExpression) supplied_args;
     } app;
 
     struct {
@@ -198,6 +212,7 @@ struct cbState {
   olStr *content;
   char *cur;
   cbSpan cur_loc;
+  u64 cur_temp;
   olArray loc_stack;
 };
 
@@ -218,6 +233,7 @@ struct cbError {
     ERROR_WRONG_ARGS,
     ERROR_EXPECTED_IDENT,
     ERROR_INCOMPATIBLE_TYPES,
+    ERROR_UNDEFINED_VAR,
     ERROR_LEN,
   } kind;
 };

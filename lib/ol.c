@@ -29,6 +29,21 @@ olStrBuilder olStrBuilder_make(u32 reserve) {
   return result;
 }
 
+void olStrBuilder_appendf(olStrBuilder* sb, char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  u32 required_size = vsnprintf(null, 0, fmt, args);
+  u32 new_len = sb->len + required_size;
+  while (new_len > sb->cap) {
+    float mul = sb->cap > 512 ? 2 : 1.5;
+    sb->cap *= mul;
+    sb->data = (char *)realloc(sb->data, sb->cap);
+  }
+  char* buf = advance_ptr(sb->data, sb->len);
+  vsnprintf(buf, required_size, fmt, args);
+  va_end(args);
+}
+
 void olStrBuilder_appendc(olStrBuilder *sb, char c) {
   if (sb->len + 1 > sb->cap) {
     float mul = sb->cap > 512 ? 2 : 1.5;
@@ -168,6 +183,13 @@ olArray olArray_make(u32 element_size, u32 element_count) {
   return result;
 }
 
+olArray olArray_copy(olArray* list) {
+  olArray result = olArray_make(list->element_size, list->cap);
+  result.used = list->used;
+  memcpy_s(result.data, list->cap * list->element_size, list->data, list->used * list->element_size);
+  return result;
+}
+
 void *olArray_push(olArray *list) {
   list->used += 1;
   if (list->used > list->cap) {
@@ -176,6 +198,14 @@ void *olArray_push(olArray *list) {
     list->data = realloc(list->data, list->cap);
   }
   return advance_ptr(list->data, (list->used - 1) * list->element_size);
+}
+
+void olArray_reserve(olArray* list, u32 additional) {
+  if (list->used + additional > list->cap) {
+    float mul = list->used > 100 ? 1.5 : 2.0;
+    list->cap *= mul;
+    list->data = realloc(list->data, list->cap);
+  }
 }
 
 void *_olArray_pop(olArray *list) {
@@ -192,11 +222,38 @@ void *olArray_get(olArray *list, u32 index) {
   return result;
 }
 
+void olArray_remove(olArray* list, u32 index) {
+  void* last = olArray_getlast(list);
+  void* cur = olArray_get(list, index);
+  memcpy_s(cur, list->element_size, last, list->element_size);
+  list->used -= 1;
+}
+
 void *olArray_getlast(olArray *list) {
   return advance_ptr(list->data, (list->used - 1) * list->element_size);
 }
 
 void olArray_delete(olArray *list) { free(list->data); }
+
+olArray olArray_concat(olArray* a, olArray* b) {
+  if (a->element_size != b->element_size) return (olArray){.cap=0};
+  olArray result = olArray_make(a->element_size, (a->used+b->used));
+  memcpy_s(result.data, result.element_size*result.cap, a->data, a->element_size*a->used);
+  void* start = advance_ptr(result.data, a->used * a->element_size);
+  memcpy_s(start, result.element_size*b->used, b->data, b->used * result.element_size);
+  result.used = a->used + b->used;
+  return result;
+}
+
+u32 olArray_find(olArray* list, void* find) {
+  for (int i = 0; i < list->used; i++) {
+    void* v = olArray_get(list, i);
+    if (memcmp(v, find, list->element_size)) {
+      return i;
+    }
+  }
+  return 0;
+}
 
 // SECTION LINKEDLIST
 olList olList_make(u32 element_size) {
@@ -265,6 +322,16 @@ olMap olMap_make(u32 element_size) {
   result.element_size = sizeof(u64) + element_size;
   result.data = malloc(result.element_size * result.cap);
   memset(result.data, 0, result.cap * result.element_size);
+  return result;
+}
+
+olMap olMap_copy(olMap* map) {
+  olMap result;
+  result.cap = map->cap;
+  result.used = map->used;
+  result.element_size = map->element_size;
+  result.data = malloc(result.element_size * result.cap);
+  memcpy_s(result.data, result.element_size * result.cap, map->data, result.element_size * result.cap);
   return result;
 }
 
@@ -339,15 +406,19 @@ void *olMap_insert(olMap *map, olStr *key) {
   return olMap_inserth(map, hash);
 }
 
-void olMap_remove(olMap *map, olStr *key) {
-  u64 hash = fnv1a(key);
-  u32 slot_index = hash & (map->cap - 1);
+void olMap_removeh(olMap *map, olHash key) {
+  u32 slot_index = key & (map->cap - 1);
   olMapSlot *slot = get_slot(map, slot_index);
-  while (slot->hash != hash) {
+  while (slot->hash != key) {
     slot_index = (slot_index + 1) & (map->cap - 1);
     slot = get_slot(map, slot_index);
   }
   slot->hash = 0;
+}
+
+void olMap_remove(olMap* map, olStr* str) {
+  olHash h = fnv1a(str);
+  return olMap_removeh(map, h);
 }
 
 void *olMap_insertc(olMap *map, char *key, u32 len) {
@@ -366,6 +437,19 @@ void *olMap_getc(olMap *map, char *key, u32 len) {
 }
 
 void olMap_delete(olMap *map) { free(map->data); }
+
+bool olMap_next(olMap* map, olMapSlot** cur) {
+  if (*cur == null) {
+    *cur = map->data;
+    return true;
+  }
+  olMapSlot* end = advance_ptr(map->data, map->element_size*map->cap);
+  *cur = advance_ptr(*cur, map->element_size);
+  if (*cur < end) {
+    return true;
+  }
+  return false;
+}
 
 // SECTION CONSOLE
 bool use_color = true;
@@ -470,3 +554,164 @@ void olLog_init() {
 }
 
 #endif
+
+// SECTION SET
+olSet olSet_make() {
+  olSet result;
+  result.cap = 4;
+  result.used = 0;
+  result.data = calloc(1, result.cap * sizeof(olHash));
+  return result;
+}
+
+void olSet_inserth(olSet* s, olHash h) {
+  u64 new_cap = (s->used + 1) / 0.75;
+  if (new_cap > s->cap) {
+    olHash* old_data = s->data;
+    u32 old_cap = s->cap;
+    s->cap *= 2;
+    s->data = malloc(s->cap * sizeof(olHash));
+    memset(s->data, 0, s->cap * sizeof(olHash));
+    // rehashing
+    olHash* end = advance_ptr(s->data, s->cap * sizeof(olHash));    
+    olHash* cur = s->data;
+    while (cur < end) {
+      if (*cur != 0) {
+        olSet_inserth(s, *cur);
+      }
+      advance_ptr(cur, sizeof(olHash));
+    }
+  }
+  
+  s->used += 1;
+  u32 slot_index = h & (s->cap - 1);
+  olHash* slot = advance_ptr(s->data, slot_index);
+  while (*slot != 0 && *slot != h) {
+    slot_index = (slot_index + 1) & (s->cap - 1);
+    slot = advance_ptr(s->data, slot_index);
+  }
+  *slot = h;
+}
+
+void olSet_insert(olSet* s, olStr* str) {
+  olHash h = fnv1a(str);
+  return olSet_inserth(s, h);
+}
+
+void olSet_insertc(olSet* s, char* c, u32 len) {
+  olStr* str = olStr_make(c, len);
+  olHash h = fnv1a(str);
+  return olSet_inserth(s, h);
+}
+
+void olSet_removeh(olSet* s, olHash h) {
+  u32 slot_index = h & (s->cap - 1);
+  olHash* slot = advance_ptr(s->data, slot_index);
+  while (*slot != 0 && *slot != h) {
+    slot_index = (slot_index + 1) & (s->cap - 1);
+    slot = advance_ptr(s->data, slot_index);
+  }
+  *slot = 0;
+}
+
+void olSet_remove(olSet* s, olStr* str) {
+  olHash h = fnv1a(str);
+  return olSet_inserth(s, h);
+}
+
+void olSet_removec(olSet* s, char* c, u32 len) {
+  olStr* str = olStr_make(c, len);
+  olHash h = fnv1a(str);
+  return olSet_inserth(s, h);
+}
+
+bool olSet_findh(olSet* s, olHash h) {
+  u64 slot_index = h & (s->cap - 1);
+  olHash* slot = advance_ptr(s->data, slot_index * sizeof(olHash));
+  while (*slot != 0) {
+    if (*slot == h) return true;
+    slot_index = (slot_index + 1) & (s->cap - 1);
+    slot = advance_ptr(s->data, slot_index);
+  }
+  return false;
+}
+
+bool olSet_find(olSet* s, olStr* str) {
+  olHash h = fnv1a(str);
+  return olSet_findh(s, h);
+}
+
+bool olSet_findc(olSet* s, char* c, u32 len) {
+  olStr* str = olStr_make(c, len);
+  olHash h = fnv1a(str);
+  return olSet_findh(s, h);
+}
+
+u64 next_pow2(u64 x) {
+  return x == 1 ? 1 : (1 << (64 - __builtin_clzl(x-1)));
+}
+
+bool olSet_next(olSet* a, olHash** last) {
+  if (*last == null) {
+    *last = a->data;
+  }
+  olHash* end = advance_ptr(a->data, a->cap);
+  *last = advance_ptr(*last, sizeof(olHash));
+  if (*last < end) {
+    return true;
+  }
+  return false;
+}
+
+olSet olSet_union(olSet* a, olSet* b) {
+  u64 sum_used = a->used + b->used;
+  u64 new_cap = next_pow2(sum_used);
+  olSet result = (olSet) {
+    .cap = new_cap, .used = 0,
+    .data = calloc(1, new_cap * sizeof(olHash))
+  };
+  // insert a's hashes
+  olHash* cur = null;
+  while (olSet_next(a, &cur)) {
+    olSet_inserth(&result, *cur);
+  }
+  // insert b's hashes
+  cur = null;
+  while (olSet_next(b, &cur)) {
+    olSet_inserth(&result, *cur);
+  }
+  return result;
+}
+
+olSet olSet_diff(olSet* a, olSet* b);
+
+olSet olSet_intersect(olSet* a, olSet* b) {
+  olSet* smaller = a->used < b->used ? a : b;
+  olSet* bigger = smaller == a ? b : a;
+
+  olSet result = (olSet) {
+                   .cap = smaller->cap,
+                   .used = 0,
+                   .data = calloc(1, sizeof(olHash) * smaller->cap)
+                 };
+  
+  olHash* h = null;
+  while (olSet_next(smaller, &h)) {
+    if (olSet_findh(bigger, *h)) { // hash exist in both sets
+      olSet_inserth(&result, *h);
+    }
+  }
+  return result;
+}
+
+bool olSet_issubset(olSet* a, olSet* b) {
+  olSet* smaller = a->used < b->used ? a : b;
+  olSet* bigger = smaller == a ? b : a;
+  olHash* h = null;
+  while (olSet_next(smaller, &h)) {
+    if (!olSet_findh(bigger, *h)) {
+      return false;
+    }
+  }
+  return true;
+}
