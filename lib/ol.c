@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <time.h>
 
+double olTimer_freq = 0;
+void* _readbytes(u8** ptr, u32 size);
+
 olStr *olStr_make(char *data, u32 len) {
   if (len == 0) {
     len = strlen(data);
@@ -508,7 +511,7 @@ void olLog_print_time() {
 }
 
 void _log_(char *file, int line, log_level_e level, char *fmt, ...) {
-  olLog_set_color(COLOR_GREY);
+  olLog_set_color(OLCOLOR_GREY);
   olLog_print_time();
 
   olLog_set_color(level + 1);
@@ -516,7 +519,7 @@ void _log_(char *file, int line, log_level_e level, char *fmt, ...) {
   printf("%s", log_levels[level]);
   olLog_reset_bold();
 
-  olLog_set_color(COLOR_GREY);
+  olLog_set_color(OLCOLOR_GREY);
   printf("%s:%d ", file, line);
   olLog_reset();
 
@@ -532,7 +535,14 @@ void _log_(char *file, int line, log_level_e level, char *fmt, ...) {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+void olTimer_init(void) {
+  LARGE_INTEGER li;
+  QueryPerformanceFrequency(&li);
+  olTimer_freq = (double)li.QuadPart / 1000.0;
+}
+
 void olLog_init() {
+  olTimer_init();
   HANDLE hconsole = GetStdHandle(STD_OUTPUT_HANDLE);
   if (hconsole == null) {
     return;
@@ -554,6 +564,11 @@ void olLog_init() {
 }
 
 #endif
+
+void ol_init(void) {
+  olLog_init();
+  olTimer_init();  
+}
 
 // SECTION SET
 olSet olSet_make() {
@@ -714,4 +729,225 @@ bool olSet_issubset(olSet* a, olSet* b) {
     }
   }
   return true;
+}
+
+// SECTION TIMING
+i64 olTimer_get() {
+#ifdef _WIN32
+  LARGE_INTEGER ticks;
+  QueryPerformanceCounter(&ticks);
+  return ticks.QuadPart;
+#endif
+}
+
+double olTimer_getms(i64 start, i64 end) {
+  return (end-start) / olTimer_freq;
+}
+
+// SECTION IMAGE
+olGrayscaleImage olImage_to_grayscale(olImage* img) {
+  olGrayscaleImage result;
+  OLTIME("to grayscale") {
+  const u8 rfac = 54; const u8 gfac = 182; const u8 bfac = 18;
+  
+  result.width = img->width; result.height = img->height;
+  result.data = malloc(result.width*result.height * sizeof(u8));
+  
+  olPixel* og_data = img->data;
+  for (int y = 0; y < result.height; ++y) {
+    u32 row_index = y * result.width;
+    for (int x = 0; x < result.width; ++x) {
+      olPixel p = og_data[row_index+x];
+      result.data[row_index + x] = p.r * rfac
+                                 + p.g * gfac
+                                 + p.b * bfac;
+    }
+  }
+  }
+  return result;
+}
+
+bool ol_is_whitespace(char c) {
+  return c == ' ' || c == '\r' || c == '\n' || c == '\t' || c == '\v';
+} 
+
+bool ol_is_numeric(char c) {
+  return c >= '0' && c <= '9';
+}
+
+i64 ol_parse_int(char* c, i64 len, u32 base) {
+  i64 result = 0;
+  char* cur = c;
+  for (int i = 0; i < len; i++) {
+    result *= base;
+    result += *cur - '0';
+    cur++;
+  }
+
+  return result;
+}
+
+olImage olImage_load_ppm(olByteBuffer buf, olError* out_error) {
+  u8* cur = buf.data;
+  olImage result = (olImage) {.data = null, .width = 0, .height = 0};
+  
+  // P6
+  u16 magic_num = read(u16, &cur);
+  if (magic_num != 13904) {
+    *out_error = olErr(olINVALID_MAGIC, 0);
+    return result;
+  }
+
+  // skip whitespace
+  char c;
+  do {
+    c = read(char, &cur);
+  } while (ol_is_whitespace(c));
+
+  // parse width
+  char* num_start = (char*)cur;
+  do {
+    c = read(char, &cur);
+  } while (ol_is_numeric(c));
+  u32 len = (u64)cur - (u64)num_start;
+  if (len == 0) {
+    *out_error = olErr(olINVALIDFMT, 0);
+    free(buf.data);
+    return result;
+  }
+  u32 width = ol_parse_int(num_start, len, 10);
+   
+  // skip whitespace
+  do {
+    c = read(char, &cur);
+  } while (ol_is_whitespace(c));
+
+  // parse height
+  num_start = (char*)cur;
+  do {
+    c = read(char, &cur);
+  } while (ol_is_numeric(c));
+  len = (u64)cur - (u64)num_start;
+  if (len == 0) {
+    *out_error = olErr(olINVALIDFMT, 0);
+    free(buf.data);
+    return result;
+  }
+  u32 height = ol_parse_int(num_start, len, 10);
+   
+  // skip whitespace
+  do {
+    c = read(char, &cur);
+  } while (ol_is_whitespace(c));
+
+  // get max val
+  u16 max_val = read(u16, &cur);
+  if (max_val == 0) {
+    *out_error = olErr(olINVALIDFMT, 0);
+    free(buf.data);
+    return result;
+  }
+
+  // skip single whitespace
+  read(char, &cur);
+
+  result.data = malloc(width * height * sizeof(olPixel));
+  u64 i = 0;
+  // 1 byte or 2 byte per color component
+  if (max_val < 256) {
+    while (*cur != 0) {
+      u8 r = read(u8, &cur);
+      result.data[i++].r = (r / max_val) * 255;
+      u8 g = read(u8, &cur);
+      if (g == 0) {
+        free(result.data);
+        result.data = null;
+        *out_error = olErr(olUNEXPECTEDEOF, 0);
+        free(buf.data);
+        return result;
+      }
+      result.data[i++].g = (g / max_val) * 255;
+      u8 b = read(u8, &cur);
+      if (g == 0) {
+        free(result.data);
+        result.data = null;
+        *out_error = olErr(olUNEXPECTEDEOF, 0);
+        free(buf.data);
+        return result;
+      }
+      result.data[i++].b = (b / max_val) * 255;
+    }
+  } else {
+    while (*cur != 0) {
+      u16 r = read(u16, &cur);
+      result.data[i++].r = (r / max_val) * 255;
+      u16 g = read(u16, &cur);
+      if (g == 0) {
+        free(result.data);
+        result.data = null;
+        *out_error = olErr(olUNEXPECTEDEOF, 0);
+        free(buf.data);
+        return result;
+      }
+      result.data[i++].g = (g / max_val) * 255;
+      u16 b = read(u16, &cur);
+      if (g == 0) {
+        free(result.data);
+        result.data = null;
+        *out_error = olErr(olUNEXPECTEDEOF, 0);
+        free(buf.data);
+        return result;
+      }
+      result.data[i++].b = (b / max_val) * 255;
+    }
+  }
+  free(buf.data);
+  return result;
+}
+
+// SECTION FILES & BYTEBUFFER
+void* _readbytes(u8** ptr, u32 size) {
+  void* result = *ptr;
+  *ptr = advance_ptr(*ptr, size);
+  return result;
+}
+
+olByteBuffer olFile_loadb(olStr* path, olError* out_error) {
+#ifdef _WIN32
+  HANDLE hfile = CreateFile(path->data,
+                            GENERIC_READ,
+                            FILE_SHARE_READ,
+                            null,
+                            OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                            null);
+  if (hfile == INVALID_HANDLE_VALUE) {
+    out_error->kind = olFILENOTFOUND;
+    out_error->data = 0;
+    return (olByteBuffer){.data=null,.len=0};
+  }
+
+  LARGE_INTEGER file_size_out;
+  if (!GetFileSizeEx(hfile, &file_size_out)) {
+    CloseHandle(hfile);
+    out_error->kind = olWINERROR;
+    out_error->data = GetLastError();
+    return (olByteBuffer){.data=null,.len=0};
+  }
+  u64 file_size = file_size_out.QuadPart;
+
+  olByteBuffer result;
+  result.data = malloc((file_size+1) * sizeof(u8));
+  
+  if (!ReadFile(hfile, result.data, file_size, (unsigned long*)&result.len, null)) {
+    CloseHandle(hfile);
+    out_error->kind = olWINERROR;
+    out_error->data = GetLastError();
+    free(result.data);
+    result.data = null;
+    return result;
+  }
+  
+  return result;
+#endif
 }

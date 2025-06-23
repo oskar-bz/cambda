@@ -25,11 +25,52 @@ typedef u32 olListNode;
 typedef struct olMap olMap;
 typedef struct olMapSlot olMapSlot;
 typedef struct olSet olSet;
+typedef struct olPixel olPixel;
+typedef struct olImage olImage;
+typedef struct olGrayscaleImage olGrayscaleImage;
+typedef struct olByteBuffer olByteBuffer;
+typedef enum olErrorKind olErrorKind;
+typedef struct olError olError;
 
 // SECTION MACROS
 #define null NULL
 #define advance_ptr(ptr, by) (typeof(ptr))((u64)ptr + by)
 #define ptr_diff(a, b) ((u64)a - (u64)b)
+#define min(a,b) (a>b ? b : a)
+#define min3(a,b,c) min(a, min(b, c))
+#define max(a, b) (a>b ? a : b)
+#define max3(a, b, c) max(a, max(b, c))
+#define read(type, ptr) *(type*)_readbytes(ptr, sizeof(type))
+#define olErr(_kind, _data) (olError) {.kind = _kind, .data = _data, .line = __LINE__, .file = __FILE__}
+
+#ifdef ENABLE_TIMING
+#define OLTIME(name) for (i64 __start__ = olTimer_get(); __start__ > 0; __start__ = 0, log_info(name " took %3.3lfms", olTimer_getms(__start__, olTimer_get())))
+#else
+#define OLTIME(name) 
+#endif
+
+// SECTION MISC
+enum olErrorKind {
+  olOK,
+  olFILENOTFOUND,
+  olWINERROR,
+  olINVALID_MAGIC,
+  olINVALIDFMT,
+  olUNEXPECTEDEOF,
+};
+
+struct olError {
+  olErrorKind kind;
+  u32 line;
+  char* file;
+  i64 data;
+};
+
+void ol_init(void);
+
+// SECTION TIMER
+i64 olTimer_get();
+double olTimer_getms(i64 start, i64 end);
 
 // SECTION STRINGS
 struct olStr {
@@ -164,32 +205,32 @@ bool olMap_next(olMap* map, olMapSlot** cur);
 u64 fnv1a(olStr *key);
 
 // SECTION CONSOLE
-#define log_debug(...) _log_(__FILE__, __LINE__, LOG_DEBUG, __VA_ARGS__)
-#define log_info(...) _log_(__FILE__, __LINE__, LOG_INFO, __VA_ARGS__)
-#define log_warn(...) _log_(__FILE__, __LINE__, LOG_WARN, __VA_ARGS__)
-#define log_error(...) _log_(__FILE__, __LINE__, LOG_ERROR, __VA_ARGS__)
-#define log_fatal(...) _log_(__FILE__, __LINE__, LOG_FATAL, __VA_ARGS__)
+#define log_debug(...) _log_(__FILE__, __LINE__, OLLOG_DEBUG, __VA_ARGS__)
+#define log_info(...) _log_(__FILE__, __LINE__, OLLOG_INFO, __VA_ARGS__)
+#define log_warn(...) _log_(__FILE__, __LINE__, OLLOG_WARN, __VA_ARGS__)
+#define log_error(...) _log_(__FILE__, __LINE__, OLLOG_ERROR, __VA_ARGS__)
+#define log_fatal(...) _log_(__FILE__, __LINE__, OLLOG_FATAL, __VA_ARGS__)
 
-#define c_info(loc, ...) c_print_error((loc), LOG_INFO, __VA_ARGS__)
-#define c_warn(loc, ...) c_print_error((loc), LOG_WARN, __VA_ARGS__)
-#define c_error(loc, ...) c_print_error((loc), LOG_ERROR, __VA_ARGS__)
+#define c_info(loc, ...) c_print_error((loc), OLLOG_INFO, __VA_ARGS__)
+#define c_warn(loc, ...) c_print_error((loc), OLLOG_WARN, __VA_ARGS__)
+#define c_error(loc, ...) c_print_error((loc), OLLOG_ERROR, __VA_ARGS__)
 
 #define c_msg(loc, level, ...) c_print_error((loc), (level), __VA_ARGS__)
 
 typedef enum {
-  COLOR_GREY = 0,
-  COLOR_GREEN,
-  COLOR_CYAN,
-  COLOR_YELLOW,
-  COLOR_RED,
+  OLCOLOR_GREY = 0,
+  OLCOLOR_GREEN,
+  OLCOLOR_CYAN,
+  OLCOLOR_YELLOW,
+  OLCOLOR_RED,
 } colors_e;
 
 typedef enum {
-  LOG_DEBUG,
-  LOG_INFO,
-  LOG_WARN,
-  LOG_ERROR,
-  LOG_FATAL,
+  OLLOG_DEBUG,
+  OLLOG_INFO,
+  OLLOG_WARN,
+  OLLOG_ERROR,
+  OLLOG_FATAL,
 } log_level_e;
 
 void olLog_init();
@@ -230,3 +271,40 @@ olSet olSet_intersect(olSet* a, olSet* b);
 bool  olSet_issubset(olSet* a, olSet* b);
 
 u64 next_pow2(u64 x);
+
+// SECTION IMAGE / PIXEL
+struct olPixel {
+  union {
+    u32 rgba;
+    struct {
+      u8 a;
+      u8 r;
+      u8 g;
+      u8 b;
+    };
+  };
+};
+
+struct olImage {
+  olPixel* data;
+  u32 width;
+  u32 height;
+};
+
+struct olGrayscaleImage {
+  u8* data;
+  u32 width;
+  u32 height;
+};
+
+olGrayscaleImage olImage_to_grayscale(olImage* img);
+olImage olImage_load_ppm(olByteBuffer buf, olError* out_error);
+
+// SECTION FILES
+struct olByteBuffer {
+  u8* data;
+  u64 len;
+};
+
+void* _read(u8** ptr, u32 size);
+olByteBuffer olFile_loadb(olStr* path, olError* out_error);
