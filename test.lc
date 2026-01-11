@@ -1,0 +1,5 @@
+; This is a comment
+
+(let mul3 (lambda (x y z) (* (* x y) z)) in
+	(mul3 1 2 3))
+
