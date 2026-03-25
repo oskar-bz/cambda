@@ -1,0 +1,59 @@
+-- booleans
+let true = t -> f -> t
+let false = t -> f -> f
+let not = b -> b false true
+
+
+
+-- numbers
+let 0 = false
+let succ = n -> f -> x -> f (n f x)
+let pred = n -> f -> x -> n (g -> h -> h (g f)) (u -> x) (u -> u)
+let 1 = succ 0
+let 2 = succ 1
+let 3 = succ 2
+let 4 = succ 3
+let 5 = succ 4
+let 6 = succ 5
+let 7 = succ 6
+let 8 = succ 7
+let 9 = succ 8
+let add = a -> b -> a succ b
+let sub = a -> b -> b pred a
+let mul = a -> b -> a (add b) 0
+let pow = b -> n -> n b
+
+let iszero = f -> f (_ -> false) true
+let iseven = n -> n not true
+let isodd = n -> n not false
+
+let leq = a -> b -> iszero (sub a b)
+let lt = a -> b -> leq (succ a) b
+let geq = a -> b -> not (lt a b)
+let gt = a -> b -> not (leq a b)
+let eq = a -> b -> and (leq a b) (leq b a)
+
+-- pairs
+let pair = x -> y -> f -> f x y
+let first = p -> p true
+let second = p -> p false
+
+let nat-rec = n -> f -> s -> second (n (p -> p (i -> res -> pair (succ i) (f i res))) (pair 0 s))
+let least-below = n -> p -> n (res -> p res res (succ res)) 0
+let factorial = n -> nat-rec n (i -> res -> mul res (succ i)) 1
+
+-- lists
+let nil = false
+let cons = head -> tail -> f -> s -> f head (tail f s)
+let car = list -> list true -
+
+let concat = a -> b -> a cons b
+let len = list -> list (head -> tail -> succ tail) 0
+
+-- maybe
+let Nothing = false
+let Just = x -> f -> n -> f x
+let unwrap = m -> m (m true _) nil
+let bind = m -> f -> m f Nothing
+let map = m -> f -> bind m (x -> Just (f x)) 
+let filter = m -> p -> bind m (x -> p x (Just x) Nothing)

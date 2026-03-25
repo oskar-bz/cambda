@@ -1,0 +1,3 @@
+(cond
+	(is var true) 34
+	(is var false) 35)))
