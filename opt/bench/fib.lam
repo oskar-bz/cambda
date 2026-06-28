@@ -1,0 +1,14 @@
+# Naive Fibonacci with Church numerals + Z combinator (strict-eval fixpoint).
+# Heavy: ~fib(n) recursive calls, each doing Church plus/sub. Output: fib(n).
+let sub    = \m.\n. n pred m in
+let isZero = \n. n (\u. false) true in
+let leq    = \m.\n. isZero (sub m n) in
+let Z      = \f. (\x. f (\v. x x v)) (\x. f (\v. x x v)) in
+let ten    = mul five two in
+let n25    = mul five five in
+let fib = Z (\rec.\n.
+   (leq n one)
+     (\u. n)
+     (\u. plus (rec (sub n one)) (rec (sub n two)))
+     id) in
+fib n25

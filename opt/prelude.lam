@@ -1,0 +1,16 @@
+# Church-encoding prelude. Concatenate before a body that uses these names.
+let id    = \x. x in
+let zero  = \f.\x. x in
+let one   = \f.\x. f x in
+let two   = \f.\x. f (f x) in
+let three = \f.\x. f (f (f x)) in
+let four  = \f.\x. f (f (f (f x))) in
+let five  = \f.\x. f (f (f (f (f x)))) in
+let succ  = \n.\f.\x. f (n f x) in
+let plus  = \m.\n.\f.\x. m f (n f x) in
+let mul   = \m.\n.\f. m (n f) in
+let exp   = \m.\n. n m in
+let pred  = \n.\f.\x. n (\g.\h. h (g f)) (\u. x) (\u. u) in
+let true  = \a.\b. a in
+let false = \a.\b. b in
+let not   = \p.\a.\b. p b a in

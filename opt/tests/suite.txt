@@ -1,0 +1,20 @@
+(\x.x)
+(\x.\y.x) a b
+(\x.\y.y) a b
+(\f.\x. f (f x)) g z
+plus (plus two three) (mul two two)
+mul (exp two three) two
+pred (pred (mul three three))
+sub (mul three four) (plus five two)
+exp three two
+not (not true) p q
+true p q
+false p q
+exp two (plus two three)
+mul zero five
+plus zero (succ (succ zero))
+(\s.\z. s (s (s z))) f x
+succ (succ (succ zero))
+(\x.\y.\z. x z (y z)) (\a.\b.a) (\a.\b.a) w
+(\x. x x) (\y. y)
+mul (mul two two) (mul two two)

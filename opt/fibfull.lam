@@ -1,0 +1,30 @@
+# Church-encoding prelude. Concatenate before a body that uses these names.
+let id    = \x. x in
+let zero  = \f.\x. x in
+let one   = \f.\x. f x in
+let two   = \f.\x. f (f x) in
+let three = \f.\x. f (f (f x)) in
+let four  = \f.\x. f (f (f (f x))) in
+let five  = \f.\x. f (f (f (f (f x)))) in
+let succ  = \n.\f.\x. f (n f x) in
+let plus  = \m.\n.\f.\x. m f (n f x) in
+let mul   = \m.\n.\f. m (n f) in
+let exp   = \m.\n. n m in
+let pred  = \n.\f.\x. n (\g.\h. h (g f)) (\u. x) (\u. u) in
+let true  = \a.\b. a in
+let false = \a.\b. b in
+let not   = \p.\a.\b. p b a in
+# Naive Fibonacci with Church numerals + Z combinator (strict-eval fixpoint).
+# Heavy: ~fib(n) recursive calls, each doing Church plus/sub. Output: fib(n).
+let sub    = \m.\n. n pred m in
+let isZero = \n. n (\u. false) true in
+let leq    = \m.\n. isZero (sub m n) in
+let Z      = \f. (\x. f (\v. x x v)) (\x. f (\v. x x v)) in
+let ten    = mul five two in
+let n25    = mul five five in
+let fib = Z (\rec.\n.
+   (leq n one)
+     (\u. n)
+     (\u. plus (rec (sub n one)) (rec (sub n two)))
+     id) in
+fib n25
