@@ -334,6 +334,60 @@ static Tm *to_db(NTerm *t, Scope *sc, int nglob) {
 }
 
 /* ===========================================================================
+ * Unused-binder elision: a re-indexing pass over the de Bruijn term.
+ *
+ * to_db numbers every binder.  But at runtime we only allocate an environment
+ * cell for binders that are actually *used*; an unused binder gets no cell, no
+ * argument evaluation, and is tagged T_LAMU.  This pass:
+ *   1. decides, for each lambda, whether its parameter occurs in the body
+ *      (`uses`), and
+ *   2. re-numbers every variable so its index counts only the *present* (used)
+ *      binders between it and its own binder — matching the runtime Env, where
+ *      elided binders contribute nothing.
+ *
+ * `PScope` is the stack of enclosing binders (innermost first) carrying each
+ * one's present/absent decision.
+ * ===========================================================================*/
+
+/* Does de Bruijn index `k` (relative to t's top) occur anywhere in `t`? */
+static int uses(Tm *t, int k) {
+    switch (t->tag) {
+        case T_VAR:  return t->ix == k;
+        case T_GLB:
+        case T_FREE: return 0;
+        case T_LAM:
+        case T_LAMU: return uses(t->lam.body, k + 1);
+        case T_APP:  return uses(t->app.fun, k) || uses(t->app.arg, k);
+    }
+    return 0;
+}
+
+typedef struct PScope { int present; struct PScope *next; } PScope;
+
+static Tm *lower(Tm *t, PScope *ps) {
+    switch (t->tag) {
+        case T_VAR: {
+            /* runtime index = number of present binders strictly inside ours */
+            int rt = 0; PScope *s = ps;
+            for (int k = 0; k < t->ix; k++) { if (s->present) rt++; s = s->next; }
+            return tnode(T_VAR, rt);
+        }
+        case T_GLB:
+        case T_FREE: return tnode(t->tag, t->ix);
+        case T_LAM: {
+            int used = uses(t->lam.body, 0);
+            PScope s = { used, ps };
+            Tm *b = lower(t->lam.body, &s);
+            return used ? tlam(b) : tlamu(b);
+        }
+        case T_APP:
+            return tapp(lower(t->app.fun, ps), lower(t->app.arg, ps));
+        default:
+            return t;   /* T_LAMU: to_db never emits it */
+    }
+}
+
+/* ===========================================================================
  * Runtime values — the semantic domain.
  *
  * A value `V` is a single 64-bit word, tagged in its low bits:
@@ -362,8 +416,15 @@ typedef struct AppCell { V arg;  V next;          } AppCell;   /* one neutral sp
 static inline int isclo(V v)  { return (v & 1) == 0; }         /* closure vs neutral */
 static inline int ishead(V v) { return (v & 2) != 0; }         /* (on a neutral) head vs app-cell */
 
+/* A closure has low bit 0.  We steal bit 1 as the "unused-binder" flag: when
+ * set, the closure's lambda never references its parameter, so applying it
+ * neither evaluates the argument nor allocates an environment cell.  ralloc16
+ * is 16-byte aligned, so the low 3 bits are always free; asclo masks them off.
+ * (ishead/ascell only ever see neutrals, low bit 1, so bit 1 is unambiguous.) */
 static inline V       mkclo(Tm *b, Env *e)   { Clo *c = ralloc16(); c->body = b; c->env = e; return (uintptr_t)c; }
-static inline Clo    *asclo(V v)             { return (Clo *)(uintptr_t)v; }
+static inline V       mkclou(Tm *b, Env *e)  { Clo *c = ralloc16(); c->body = b; c->env = e; return (uintptr_t)c | 2; }
+static inline int     clo_unused(V v)        { return (v & 2) != 0; }
+static inline Clo    *asclo(V v)             { return (Clo *)(uintptr_t)(v & ~7ULL); }
 static inline AppCell*ascell(V v)            { return (AppCell *)(uintptr_t)(v & ~7ULL); }
 static inline V       mkappneu(V arg, V nxt) { AppCell *c = ralloc16(); c->arg = arg; c->next = nxt; return (uintptr_t)c | 1; }
 
@@ -393,6 +454,7 @@ static inline V eval_atom(Tm *t, Env *env) {
         case T_GLB:  return g_gval[t->ix];
         case T_FREE: return g_fval[t->ix];
         case T_LAM:  return mkclo(t->lam.body, env);
+        case T_LAMU: return mkclou(t->lam.body, env);
         default:     return eval(t, env);             /* T_APP */
     }
 }
@@ -412,30 +474,86 @@ static V eval(Tm *t, Env *env) {
             case T_GLB:  return g_gval[t->ix];
             case T_FREE: return g_fval[t->ix];
             case T_LAM:  return mkclo(t->lam.body, env);
+            case T_LAMU: return mkclou(t->lam.body, env);
             case T_APP: {
                 Tm *fn = t->app.fun;
 
-                /* Peephole: a syntactic redex (\.body) arg can reduce without
-                 * ever building a closure for the lambda. */
-                if (fn->tag == T_LAM) {
-                    V a = eval_atom(t->app.arg, env);
-                    beta_count++;
-                    Env *ne = ralloc16(); ne->val = a; ne->next = env;
-                    env = ne; t = fn->lam.body;       /* tail-loop into the body */
-                    continue;
+                /* ---- single application (the hot path, kept exactly lean) ---- */
+                if (fn->tag != T_APP) {
+                    /* Syntactic redex (\.body) arg: reduce with no closure. */
+                    if (fn->tag == T_LAM) {
+                        V a = eval_atom(t->app.arg, env);
+                        beta_count++;
+                        Env *ne = ralloc16(); ne->val = a; ne->next = env;
+                        env = ne; t = fn->lam.body;
+                        continue;
+                    }
+                    /* Syntactic redex with an UNUSED binder: drop the argument
+                     * unevaluated and add no environment cell. */
+                    if (fn->tag == T_LAMU) {
+                        beta_count++;
+                        t = fn->lam.body;             /* env unchanged */
+                        continue;
+                    }
+                    V fv = eval_atom(fn, env);
+                    if (isclo(fv)) {
+                        Clo *c = asclo(fv); beta_count++;
+                        if (clo_unused(fv)) {         /* argument is dead */
+                            env = c->env; t = c->body;
+                            continue;
+                        }
+                        V av = eval_atom(t->app.arg, env);
+                        Env *ne = ralloc16(); ne->val = av; ne->next = c->env;
+                        env = ne; t = c->body;
+                        continue;
+                    }
+                    V av = eval_atom(t->app.arg, env);
+                    return mkappneu(av, fv);
                 }
 
-                /* General application: evaluate function then argument. */
-                V fv = eval_atom(fn, env);
-                V av = eval_atom(t->app.arg, env);
-                if (isclo(fv)) {                      /* beta-reduce */
-                    Clo *c = asclo(fv); beta_count++;
-                    Env *ne = ralloc16(); ne->val = av; ne->next = c->env;
-                    env = ne; t = c->body;            /* tail-loop into the body */
-                    continue;
+                /* ---- multi-argument spine: arity uncurrying ----
+                 * Collect the left spine  ((h a0) a1) ... a(n-1)  and bind the
+                 * arguments by *peeling* successive lambda binders in local
+                 * registers, so intermediate partial applications are never
+                 * built as closures.  Partial- and over-application both fall
+                 * out of the loop conditions. */
+                Tm *args[64]; int n = 0; Tm *hh = t;
+                while (hh->tag == T_APP && n < 64) { args[n++] = hh->app.arg; hh = hh->app.fun; }
+                int i = n - 1;                        /* args[n-1] is applied first */
+
+                Tm *body; Env *e; int unused;
+                if (hh->tag == T_LAM)       { body = hh->lam.body; e = env; unused = 0; }
+                else if (hh->tag == T_LAMU) { body = hh->lam.body; e = env; unused = 1; }
+                else {
+                    V hv = eval_atom(hh, env);        /* head may still be T_APP if n hit 64 */
+                    if (!isclo(hv)) {                 /* stuck head: build a neutral spine */
+                        for (; i >= 0; i--) { V av = eval_atom(args[i], env); hv = mkappneu(av, hv); }
+                        return hv;
+                    }
+                    Clo *c = asclo(hv); body = c->body; e = c->env; unused = clo_unused(hv);
                 }
-                /* Function is stuck (a neutral): extend its spine by one arg. */
-                return mkappneu(av, fv);
+
+                /* Peel binders against the pending arguments. */
+                for (;;) {
+                    beta_count++;
+                    if (!unused) {
+                        V av = eval_atom(args[i], env);
+                        Env *ne = ralloc16(); ne->val = av; ne->next = e; e = ne;
+                    }
+                    i--;
+                    if (i < 0) { t = body; env = e; break; }   /* fully applied → tail-loop body */
+                    if (body->tag == T_LAM)  { body = body->lam.body; unused = 0; continue; }
+                    if (body->tag == T_LAMU) { body = body->lam.body; unused = 1; continue; }
+                    /* body isn't a lambda but arguments remain: reduce it, then
+                     * keep applying the rest to the result. */
+                    V hv = eval(body, e);
+                    if (!isclo(hv)) {
+                        for (; i >= 0; i--) { V av = eval_atom(args[i], env); hv = mkappneu(av, hv); }
+                        return hv;
+                    }
+                    Clo *c = asclo(hv); body = c->body; e = c->env; unused = clo_unused(hv);
+                }
+                continue;                             /* evaluate the peeled (t, env) */
             }
         }
     }
@@ -446,6 +564,7 @@ static V eval(Tm *t, Env *env) {
 static V apply(V fv, V av) {
     if (isclo(fv)) {
         Clo *c = asclo(fv); beta_count++;
+        if (clo_unused(fv)) return eval(c->body, c->env);   /* arg is dead */
         Env *ne = ralloc16(); ne->val = av; ne->next = c->env;
         return eval(c->body, ne);
     }
@@ -571,8 +690,8 @@ int main(int argc, char **argv) {
     Parser ps = { src };
     NTerm *body = parse_program(&ps);
     Tm **gtm = malloc(sizeof(Tm *) * (g_ndef ? g_ndef : 1));
-    for (int i = 0; i < g_ndef; i++) gtm[i] = to_db(g_gdef[i], NULL, i);
-    Tm *btm = to_db(body, NULL, g_ndef);
+    for (int i = 0; i < g_ndef; i++) gtm[i] = lower(to_db(g_gdef[i], NULL, i), NULL);
+    Tm *btm = lower(to_db(body, NULL, g_ndef), NULL);
 
     /* Each free variable evaluates to a bare neutral head (no allocation). */
     g_fval = malloc(sizeof(V) * (g_nfree ? g_nfree : 1));
